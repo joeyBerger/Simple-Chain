@@ -19,24 +19,33 @@ const Block = require('./Block.js');
 
 class Blockchain {
     constructor() {
-        this.chain = [];
-        this.addNewBlock(new Block.Block("First block in the chain - Genesis block"));
+        let self = this;
+        this.getBlockHeight().then(function(result) {
+            //chain is empty if result is 0, therefore add genesis block
+            if (result === -1) {
+                self.addBlock(new Block.Block("First block in the chain - Genesis block"));
+            }
+        })
     }
 
     // Add new block
-    addNewBlock(newBlock) {
+    addBlock(newBlock) {
         let self = this;
         return new Promise(function(resolve, reject) {
             self.getBlockHeight().then(function(result) {
-                newBlock.height = result;
-                return self.getBlock(result - 1);
+                newBlock.height = result + 1;
+                //get previous block for previousHash
+                return self.getBlock(result);
             }).then(function(result) {
-                //check for genesis block
-                if (result !== "") {
+                //don't assign previousHash if genesis block
+                if (result !== 0) {
                     newBlock.previousBlockHash = result.hash;
                 }
+                //get current time
                 newBlock.time = new Date().getTime().toString().slice(0, -3);
+                //make hash of object
                 newBlock.hash = SHA256(JSON.stringify(newBlock)).toString();
+                //make string of object to write to database
                 let stringifiedObj = JSON.stringify(newBlock).toString();
                 db.put(newBlock.height, stringifiedObj, function(err) {
                     if (err) {
@@ -45,22 +54,30 @@ class Blockchain {
                     }
                 })
                 resolve(stringifiedObj);
+            }).catch(() => {
+                console.log("Unable To Add Block");
             })
         })
     }
 
     // Get block height
     getBlockHeight() {
+        let self = this;
         return new Promise(function(resolve, reject) {
-            let i = 0;
+            let i = -1;
             db.createReadStream().on('data', function() {
                 i++;
             }).on('error', function(err) {
                 console.log('Unable to read data stream!', err);
                 reject(err);
             }).on('close', function() {
-                console.log('Block #' + i);
-                resolve(i);
+                self.getBlock(i).then(function(result) {
+                    if (result === 0) {
+                        resolve(-1);
+                    } else {
+                        resolve(result.height);
+                    }
+                })
             });
         });
     }
@@ -74,11 +91,12 @@ class Blockchain {
                     if (err) {
                         console.log('Not found!', err);
                         reject(err);
+                    } else {
+                        resolve(JSON.parse((value)));
                     }
-                    resolve(JSON.parse((value)));
                 })
             } else {
-                resolve("");
+                resolve(0);
             }
         });
     };
@@ -105,37 +123,45 @@ class Blockchain {
     // Validate blockchain
     validateChain() {
         let self = this;
-        let errorLog = [];
+        let validateBlockErrorLog = [];
+        let internalErrorLog = [];
         return new Promise(function(resolve) {
             self.getBlockHeight().then(function(result) {
                 var totalBlocks = result;
                 let promises = [];
                 let blockObj = [];
-                for (var i = 0; i < totalBlocks; i++) {
+                for (var i = 0; i < totalBlocks + 1; i++) {
                     promises.push(self.validateBlock(i));
                 }
-                for (var i = 0; i < totalBlocks; i++) {
+                for (var i = 0; i < totalBlocks + 1; i++) {
                     blockObj.push(self.getBlock(i));
                 }
                 Promise.all(promises).then(function(results) {
                     for (var i = 0; i < results.length; i++) {
                         if (results[i] !== true) {
-                            errorLog.push(results[i]);
+                            validateBlockErrorLog.push(results[i]);
                         }
                     }
+                    if (validateBlockErrorLog.length > 0) {
+                        console.log(validateBlockErrorLog.length + " Error(s) Detected");
+                        for (var i = 0; i < validateBlockErrorLog.length; i++) {
+                            console.log(validateBlockErrorLog[i]);
+                        }
+                    }
+
                     Promise.all(blockObj).then(function(results) {
                         for (var i = 0; i < results.length - 1; i++) {
                             let blockHash = results[i].hash;
                             let previousHash = results[i + 1].previousBlockHash;
                             if (blockHash !== previousHash) {
-                                errorLog.push("Previous Block Hash Of Block " + (i + 1) + " Does Not Match Hash Of Previous Block");
+                                internalErrorLog.push("Previous Block Hash Of Block " + (i + 1) + " Does Not Match Hash Of Previous Block");
                             }
                         }
-                        if (errorLog.length > 0) {
-                            for (var i = 0; i < errorLog.length; i++) {
-                                console.log(errorLog[i]);
+                        if (internalErrorLog.length > 0) {
+                            for (var i = 0; i < internalErrorLog.length; i++) {
+                                console.log(internalErrorLog[i]);
                             }
-                        } else {
+                        } else if (internalErrorLog.length === 0) {
                             console.log('No errors detected');
                         }
                         resolve();
